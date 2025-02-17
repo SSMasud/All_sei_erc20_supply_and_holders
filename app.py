@@ -209,30 +209,54 @@ def get_data_for_date_range(start_date, end_date):
 
     return data_rows
 
-# Only show the fetch button if we have both a QuickNode URL and at least one token
+# Only show the date selection and fetch button if we have both a QuickNode URL and at least one token
 if QUICKNODE_URL and st.session_state.tokens:
-    if st.button("Fetch Token Supply Data for Last 2 Months"):
-        with st.spinner("Fetching data..."):
-            end_date = datetime.utcnow().date()
-            start_date = end_date - timedelta(days=60)
-            data = get_data_for_date_range(start_date, end_date)
-
-        if data:
-            df = pd.DataFrame(data)
-            df['date'] = pd.to_datetime(df['date'])
-            df.sort_values('date', inplace=True)
-            df.set_index('date', inplace=True)
-            st.success("Data fetched successfully!")
-            st.write(df)
-
-            for token in st.session_state.tokens:
-                token_name = token["name"]
-                st.subheader(f"{token_name} Total Supply Over Time")
-                if token_name in df.columns:
-                    st.line_chart(df[token_name])
-                else:
-                    st.write("No data available for this token.")
+    st.subheader("Select Date Range")
+    
+    # Set min and max dates
+    min_date = datetime(2024, 6, 1).date()
+    max_date = datetime.utcnow().date()
+    
+    # Date selection
+    col1, col2 = st.columns(2)
+    with col1:
+        start_date = st.date_input(
+            "Start Date",
+            min_value=min_date,
+            max_value=max_date,
+            value=max_date - timedelta(days=30)
+        )
+    with col2:
+        end_date = st.date_input(
+            "End Date",
+            min_value=min_date,
+            max_value=max_date,
+            value=max_date
+        )
+    
+    if st.button("Fetch Token Supply Data"):
+        if start_date > end_date:
+            st.error("Start date must be before end date")
         else:
-            st.error("No data was fetched.")
+            with st.spinner("Fetching data..."):
+                data = get_data_for_date_range(start_date, end_date)
+
+            if data:
+                df = pd.DataFrame(data)
+                df['date'] = pd.to_datetime(df['date'])
+                df.sort_values('date', inplace=True)
+                df.set_index('date', inplace=True)
+                st.success("Data fetched successfully!")
+                st.write(df)
+
+                for token in st.session_state.tokens:
+                    token_name = token["name"]
+                    st.subheader(f"{token_name} Total Supply Over Time")
+                    if token_name in df.columns:
+                        st.line_chart(df[token_name])
+                    else:
+                        st.write("No data available for this token.")
+            else:
+                st.error("No data was fetched.")
 else:
     st.warning("Please enter your QuickNode URL and add at least one token to begin.")
