@@ -12,6 +12,9 @@ st.title("Token Total Supply Dashboard")
 # QuickNode URL input
 QUICKNODE_URL = st.text_input("Enter your QuickNode URL:", "")
 
+# Add API key input
+SEITRACE_API_KEY = st.text_input("Enter your Seitrace API Key:", type="password")
+
 # Token input section
 st.subheader("Token Configuration")
 st.write("Add one or more tokens to track")
@@ -127,6 +130,35 @@ def get_closest_block_timestamp(target_date):
 
     return chosen_block, chosen_datetime
 
+def get_holder_count(contract_address, chain_id="pacific-1"):
+    """Fetch token holder count from Seitrace API"""
+    if not SEITRACE_API_KEY:
+        return None
+        
+    session = requests.Session()
+    session.headers.update({
+        "accept": "application/json",
+        "x-api-key": SEITRACE_API_KEY,
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/97.0.4692.71 Safari/537.36",
+    })
+    
+    url = "https://seitrace.com/insights/api/v2/token/erc20"
+    params = {
+        "chain_id": chain_id,
+        "contract_address": contract_address,
+    }
+    
+    try:
+        response = session.get(url, params=params)
+        response.raise_for_status()
+        data = response.json()
+        holder_count = data.get('token_holder_count')
+        # Convert string to integer if it exists
+        return int(holder_count) if holder_count is not None else None
+    except (requests.exceptions.RequestException, ValueError) as e:
+        st.error(f"Failed to fetch holder count: {str(e)}")
+        return None
+
 def get_token_total_supplies(block_number):
     batch_payload = []
     id_to_token = {}
@@ -148,6 +180,7 @@ def get_token_total_supplies(block_number):
 
     responses = call_rpc_batch(batch_payload)
     token_supplies = {}
+    
     if responses is None:
         for token in st.session_state.tokens:
             token_supplies[token["name"]] = None
@@ -159,6 +192,8 @@ def get_token_total_supplies(block_number):
         token_info = id_to_token.get(resp_id)
         if token_info is None:
             continue
+            
+        # Get supply
         if result_hex in (None, "0x", "0x0"):
             supply = 0
         else:
@@ -166,6 +201,7 @@ def get_token_total_supplies(block_number):
                 supply = int(result_hex, 16)
             except ValueError:
                 supply = None
+                
         token_supplies[token_info["name"]] = supply
 
     return token_supplies
@@ -181,6 +217,7 @@ def get_token_total_supplies_with_retries(block_number, max_retries=3, delay=1):
 def get_data_for_date_range(start_date, end_date):
     data_rows = []
     current_date = start_date
+    holder_data = {}  # Store holder counts separately
 
     while current_date <= end_date:
         st.write(f"Fetching data for {current_date}...")
@@ -190,27 +227,33 @@ def get_data_for_date_range(start_date, end_date):
             current_date += timedelta(days=1)
             continue
 
-        token_supplies = get_token_total_supplies_with_retries(block_number, max_retries=3, delay=1)
-        if token_supplies is None:
-            st.write(f"Skipping {current_date} because token supplies could not be fetched.")
-            current_date += timedelta(days=1)
-            continue
-
+        # Only get supply data in the time series
+        token_supplies = get_token_total_supplies(block_number)
+        
         row = {"date": current_date.strftime('%Y-%m-%d'), "block": block_number}
         for token in st.session_state.tokens:
             raw_supply = token_supplies.get(token["name"])
             if raw_supply is not None:
-                row[token["name"]] = raw_supply / (10 ** token["decimals"])
+                row[f"{token['name']}_supply"] = raw_supply / (10 ** token["decimals"])
             else:
-                row[token["name"]] = None
+                row[f"{token['name']}_supply"] = None
 
         data_rows.append(row)
         current_date += timedelta(days=1)
 
-    return data_rows
+    # Get current holder counts once
+    current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')
+    for token in st.session_state.tokens:
+        holder_count = get_holder_count(token["contract"])
+        holder_data[token["name"]] = {
+            "count": holder_count,
+            "timestamp": current_time
+        }
+
+    return data_rows, holder_data
 
 # Only show the date selection and fetch button if we have both a QuickNode URL and at least one token
-if QUICKNODE_URL and st.session_state.tokens:
+if QUICKNODE_URL and SEITRACE_API_KEY and st.session_state.tokens:
     st.subheader("Select Date Range")
     
     # Set min and max dates
@@ -239,7 +282,7 @@ if QUICKNODE_URL and st.session_state.tokens:
             st.error("Start date must be before end date")
         else:
             with st.spinner("Fetching data..."):
-                data = get_data_for_date_range(start_date, end_date)
+                data, holder_data = get_data_for_date_range(start_date, end_date)
 
             if data:
                 df = pd.DataFrame(data)
@@ -247,16 +290,35 @@ if QUICKNODE_URL and st.session_state.tokens:
                 df.sort_values('date', inplace=True)
                 df.set_index('date', inplace=True)
                 st.success("Data fetched successfully!")
+                
+                # Display supply data
+                st.subheader("Total Supply Over Time")
                 st.write(df)
 
+                # Display current holder counts
+                st.subheader("Token Holder Counts")
                 for token in st.session_state.tokens:
                     token_name = token["name"]
-                    st.subheader(f"{token_name} Total Supply Over Time")
-                    if token_name in df.columns:
-                        st.line_chart(df[token_name])
+                    holder_info = holder_data.get(token_name, {})
+                    
+                    if holder_info.get("count") is not None:
+                        st.metric(
+                            label=f"{token_name} Holders",
+                            value=f"{holder_info['count']:,}",
+                            help=f"Last updated: {holder_info['timestamp']}"
+                        )
                     else:
-                        st.write("No data available for this token.")
+                        st.write(f"No holder data available for {token_name}")
+
+                # Display supply charts
+                for token in st.session_state.tokens:
+                    token_name = token["name"]
+                    st.subheader(f"{token_name} Supply Over Time")
+                    if f"{token_name}_supply" in df.columns:
+                        st.line_chart(df[f"{token_name}_supply"])
+                    else:
+                        st.write("No supply data available.")
             else:
                 st.error("No data was fetched.")
 else:
-    st.warning("Please enter your QuickNode URL and add at least one token to begin.")
+    st.warning("Please enter your QuickNode URL, Seitrace API Key, and add at least one token to begin.")
