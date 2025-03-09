@@ -218,14 +218,36 @@ def get_data_for_date_range(start_date, end_date):
     data_rows = []
     current_date = start_date
     holder_data = {}  # Store holder counts separately
+    today = datetime.utcnow().date()
 
     while current_date <= end_date:
         st.write(f"Fetching data for {current_date}...")
-        block_number, block_datetime = get_closest_block_timestamp(current_date)
-        if block_number is None:
-            st.write(f"No block found for {current_date}, skipping...")
-            current_date += timedelta(days=1)
-            continue
+        
+        # If the current date is today, use the latest block instead of searching for a specific timestamp
+        if current_date == today:
+            latest_block_response = call_rpc("eth_blockNumber", [])
+            if not latest_block_response or "result" not in latest_block_response:
+                st.write("Error fetching the latest block number, skipping...")
+                current_date += timedelta(days=1)
+                continue
+                
+            block_number = int(latest_block_response["result"], 16)
+            block_data = call_rpc("eth_getBlockByNumber", [hex(block_number), False])
+            if not block_data or "result" not in block_data:
+                st.write(f"Error fetching latest block data, skipping...")
+                current_date += timedelta(days=1)
+                continue
+                
+            block_timestamp = int(block_data["result"]["timestamp"], 16)
+            block_datetime = datetime.utcfromtimestamp(block_timestamp)
+            st.write(f"Using latest block {block_number} for today ({block_datetime})")
+        else:
+            # For past dates, use the existing method to find the closest block
+            block_number, block_datetime = get_closest_block_timestamp(current_date)
+            if block_number is None:
+                st.write(f"No block found for {current_date}, skipping...")
+                current_date += timedelta(days=1)
+                continue
 
         # Only get supply data in the time series
         token_supplies = get_token_total_supplies(block_number)
